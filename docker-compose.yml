@@ -1,0 +1,81 @@
+services:
+  # ---------------------------------------------------------------------
+  # LiteLLM proxy — unified gateway to OpenAI / Anthropic / Gemini / etc.
+  # OpenClaw talks to this instead of talking to each provider directly.
+  # ---------------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+      - REPLICATE_API_KEY=${REPLICATE_API_KEY:-}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health/liveliness"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  openclaw-gateway:
+    image: ghcr.io/phioranex/openclaw-docker:latest
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    depends_on:
+      litellm:
+        condition: service_healthy
+    # Uncomment the following line if running on Synology NAS or other systems with UID/GID issues
+    # user: "1000:1000"
+    volumes:
+      - ~/.openclaw:/home/node/.openclaw
+      - ~/.openclaw/workspace:/home/node/.openclaw/workspace
+    ports:
+      - "18789:18789"
+      - "18790:18790"
+    environment:
+      - NODE_ENV=production
+      - OPENCLAW_SKIP_SERVICE_CHECK=true
+      # Base URL OpenClaw will use to reach LiteLLM (service name on the compose network)
+      - LITELLM_BASE_URL=http://litellm:4000
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY}
+    command: ["gateway"]
+
+  socat-proxy:
+    image: alpine/socat
+    container_name: openclaw-socat
+    restart: unless-stopped
+    network_mode: "service:openclaw-gateway"
+    command: "TCP-LISTEN:18790,fork,bind=0.0.0.0,reuseaddr TCP:127.0.0.1:18789"
+
+  openclaw-cli:
+    image: ghcr.io/phioranex/openclaw-docker:latest
+    container_name: openclaw-cli
+    stdin_open: true
+    tty: true
+    depends_on:
+      - litellm
+    # Uncomment the following line if running on Synology NAS or other systems with UID/GID issues
+    # user: "1000:1000"
+    volumes:
+      - ~/.openclaw:/home/node/.openclaw
+      - ~/.openclaw/workspace:/home/node/.openclaw/workspace
+    environment:
+      - NODE_ENV=production
+      - LITELLM_BASE_URL=http://litellm:4000
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY}
+    entrypoint: ["node", "/app/dist/index.js"]
+    profiles:
+      - cli
